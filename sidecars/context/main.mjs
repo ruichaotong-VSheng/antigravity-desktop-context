@@ -57,9 +57,50 @@ async function findPython() {
   throw new Error('Python 3 not found. Install it from python.org and restart Antigravity.');
 }
 
-// --- live model catalog -------------------------------------------------------
+// --- live model catalog & quotas ----------------------------------------------
 
 let catalogFetchedAt = 0;
+let quotaFetchedAt = 0;
+let cachedQuotas = [];
+const QUOTA_TTL_MS = 30 * 1000;
+
+function extractQuotas(models) {
+  const byFamily = new Map();
+  for (const [id, m] of Object.entries(models)) {
+    const rawName = (m?.displayName || '').trim();
+    if (!rawName || !m?.quotaInfo) continue;
+    if (m.recommended === false && !rawName.includes('Image')) continue;
+    if (rawName.startsWith('Orchestrator')) continue;
+    const rem = typeof m.quotaInfo.remainingFraction === 'number' ? m.quotaInfo.remainingFraction : null;
+    if (rem === null) continue;
+    const resetTime = m.quotaInfo.resetTime || '';
+    const family = rawName.replace(/\s*\((Low|Medium|High|XHigh)\)\s*$/i, '').trim();
+    const prev = byFamily.get(family);
+    if (!prev || rem < prev.remainingFraction) {
+      byFamily.set(family, {
+        family,
+        id,
+        remainingFraction: rem,
+        resetTime,
+        maxTokens: Number(m.maxTokens) || 0,
+      });
+    }
+  }
+  const order = (name) => {
+    if (/Argon/i.test(name)) return 1;
+    if (/Neon/i.test(name)) return 2;
+    if (/Hydrogen/i.test(name)) return 3;
+    if (/Carbon/i.test(name)) return 4;
+    if (/Claude Opus/i.test(name)) return 5;
+    if (/Claude Sonnet/i.test(name)) return 6;
+    if (/GPT-OSS/i.test(name)) return 7;
+    if (/Gemini 3\.8/i.test(name)) return 8;
+    if (/Gemini 3\.5/i.test(name)) return 9;
+    if (/Gemini 3/i.test(name)) return 10;
+    return 50;
+  };
+  return Array.from(byFamily.values()).sort((a, b) => order(a.family) - order(b.family) || a.family.localeCompare(b.family));
+}
 
 function lsRequest(method, body) {
   const addr = (process.env.ANTIGRAVITY_LS_ADDRESS || '').trim();
@@ -99,9 +140,12 @@ function lsRequest(method, body) {
   });
 }
 
-async function refreshCatalog() {
-  if (Date.now() - catalogFetchedAt < CATALOG_TTL_MS && existsSync(CATALOG_PATH)) return;
+async function refreshCatalog(forceQuota = false) {
+  const needCatalog = Date.now() - catalogFetchedAt >= CATALOG_TTL_MS || !existsSync(CATALOG_PATH);
+  const needQuota = forceQuota || Date.now() - quotaFetchedAt >= QUOTA_TTL_MS || !cachedQuotas.length;
+  if (!needCatalog && !needQuota) return;
   catalogFetchedAt = Date.now();
+  quotaFetchedAt = Date.now();
   try {
     const resp = await lsRequest('GetAvailableModels', { metadata: { ideName: 'antigravity', extensionName: 'antigravity' } });
     const models = resp?.response?.models || resp?.models || {};
@@ -114,6 +158,7 @@ async function refreshCatalog() {
       mkdirSync(DATA_DIR, { recursive: true });
       writeFileSync(CATALOG_PATH, JSON.stringify(catalog));
     }
+    cachedQuotas = extractQuotas(models);
   } catch (err) {
     console.error('[context] model catalog unavailable, using built-in limits:', err.message);
   }
@@ -139,19 +184,21 @@ function fileStamp(path) {
   }
 }
 
-async function report(conversationId, workspaceUri) {
+async function report(conversationId, workspaceUri, forceQuota = false) {
+  await refreshCatalog(forceQuota);
   if (!UUID.test(conversationId || '')) {
-    return { error: 'no-conversation' };
+    return { error: 'no-conversation', quotas: cachedQuotas };
   }
   const db = join(CONVERSATIONS, `${conversationId}.db`);
   if (!existsSync(db)) {
-    return { error: 'no-database' };
+    return { error: 'no-database', quotas: cachedQuotas };
   }
-  await refreshCatalog();
   const workspace = workspacePath(workspaceUri);
   const key = [fileStamp(db), fileStamp(`${db}-wal`), workspace, fileStamp(CATALOG_PATH)].join('|');
   const cached = cache.get(conversationId);
-  if (cached && cached.key === key) return cached.report;
+  if (cached && cached.key === key) {
+    return { ...cached.report, quotas: cachedQuotas };
+  }
 
   const { cmd, pre } = await findPython();
   const args = [...pre, SCRIPT, '--db', db, '--json'];
@@ -160,16 +207,25 @@ async function report(conversationId, workspaceUri) {
   const out = await run(cmd, args);
   const result = { ...JSON.parse(out), updatedAt: new Date().toISOString() };
   cache.set(conversationId, { key, report: result });
-  return result;
+  return { ...result, quotas: cachedQuotas };
 }
 
 app.page('/', () => new Response(readFileSync(join(HERE, 'index.html'), 'utf8'), { contentType: 'text/html' }));
 
 app.api('/api/report', async (data) => {
   try {
-    return await report(data.conversationId, data.workspace);
+    return await report(data.conversationId, data.workspace, data.forceQuota === '1');
   } catch (err) {
-    return { error: 'failed', message: err.message };
+    return { error: 'failed', message: err.message, quotas: cachedQuotas };
+  }
+}, 'GET');
+
+app.api('/api/quotas', async (data) => {
+  try {
+    await refreshCatalog(data.force === '1');
+    return { quotas: cachedQuotas, updatedAt: new Date(quotaFetchedAt || Date.now()).toISOString() };
+  } catch (err) {
+    return { error: 'failed', message: err.message, quotas: cachedQuotas };
   }
 }, 'GET');
 

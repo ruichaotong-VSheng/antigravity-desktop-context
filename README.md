@@ -1,4 +1,38 @@
-# antigravity-desktop-context
+# antigravity-desktop-context（中文增强版）
+
+适用于 **Antigravity 2.0 桌面端** 的 **上下文用量（Context Usage）** 侧边栏插件，基于 [dimitr-io/antigravity-desktop-context](https://github.com/dimitr-io/antigravity-desktop-context)（MIT License）汉化与增强。
+
+无需修改客户端 `app.asar`，完全遵循 Antigravity 官方插件与 Sidecar 规范，开箱即用。
+
+## ✨ 中文增强版改进
+
+- **全中文界面汉化**：完整汉化上下文 Token 分类（用户消息、智能体回复、工具调用、系统提示词、规则、技能、子智能体、插件、MCP 工具等）、检查点及文件列表。
+- **macOS 系统自带 Python 3.9 兼容**：补充 `from __future__ import annotations`，在 macOS 默认 `/usr/bin/python3`（3.9.6）下无需额外部署高版本 Python 即可直接运行并通过全部单测。
+- **防闪烁与并发锁修复**：为 SQLite 只读连接增加 `timeout=5.0` 并加入前端轮询防重入保护；当对话高频写入数据库偶发短暂锁库时保持当前视图不闪屏。
+- **新增「模型接口余量」折叠面板**：复用 `GetAvailableModels` 接口展示各模型系列的单池剩余百分比、彩色进度条与重置倒计时，默认折叠不干扰上下文主视图，支持一键刷新。
+
+## 🚀 安装方法（macOS / Linux / Windows）
+
+需要已安装 Antigravity 2.0 桌面客户端，且系统 `PATH` 中有 Python 3（`python3`、`python` 或 `py`）。
+
+1. 将本仓库克隆到 Antigravity 插件目录：
+
+   ```bash
+   # macOS / Linux
+   git clone https://github.com/ruichaotong-VSheng/antigravity-desktop-context.git ~/.gemini/config/plugins/desktop-context
+   ```
+
+   ```powershell
+   # Windows (PowerShell)
+   git clone https://github.com/ruichaotong-VSheng/antigravity-desktop-context.git "$HOME\.gemini\config\plugins\desktop-context"
+   ```
+
+2. 重启 Antigravity（或在 **Customizations → Installed** 中确认 **Context Usage** 已开启）。
+3. 打开任意对话，在右侧边栏打开 **Context Usage** 面板即可实时查看。
+
+---
+
+# antigravity-desktop-context (Original English README)
 
 A **Context Usage** side panel for the **Antigravity 2.0 desktop app**, based on the Antigravity CLI's `/context` command.
 

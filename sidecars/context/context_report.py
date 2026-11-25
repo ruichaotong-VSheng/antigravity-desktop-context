@@ -6,6 +6,8 @@ The CLI reads the live trajectory from memory; this script reads the same
 protobufs from the conversation database (`steps` and `gen_metadata` tables).
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -673,7 +675,7 @@ def render(st: dict, model: str, system_files: list[tuple[str, int]], term_width
 
 def load(db_path: Path) -> tuple[list[Step], Msg | None]:
     uri = "file:" + db_path.as_posix() + "?mode=ro"
-    conn = sqlite3.connect(uri, uri=True)
+    conn = sqlite3.connect(uri, uri=True, timeout=5.0)
     try:
         rows = conn.execute("SELECT idx, step_type, status, metadata, step_payload FROM steps ORDER BY idx").fetchall()
         steps = [Step(pos, r[4] or b"", r[1], r[2], r[3]) for pos, r in enumerate(rows)]

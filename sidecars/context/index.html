@@ -83,12 +83,28 @@
   .ck-main { display: flex; justify-content: space-between; gap: 8px; }
   .badge { font-size: 11px; color: #81c995; border: 1px solid color-mix(in srgb, #81c995 40%, transparent); border-radius: 999px; padding: 0 7px; white-space: nowrap; }
 
+  /* quotas */
+  .q-details summary { list-style: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .q-details summary::-webkit-details-marker { display: none; }
+  .q-details summary h2 { margin: 0; }
+  .q-details[open] summary { margin-bottom: 6px; }
+  .q-btn { font-size: 11px; padding: 1px 7px; }
+  .q-note { font-size: 11px; color: var(--dim); margin: 0 0 6px; }
+  .q-row { display: grid; grid-template-columns: minmax(110px, 1fr) 64px 42px auto; align-items: center; gap: 8px; padding: 3px 0; font-size: 12.5px; }
+  .q-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .q-bar { display: block; height: 6px; border-radius: 999px; background: var(--empty); overflow: hidden; }
+  .q-fill { display: block; height: 100%; border-radius: 999px; background: #81c995; }
+  .q-fill.mid { background: #f9ab00; }
+  .q-fill.low { background: #f28b82; }
+  .q-pct { text-align: right; font-weight: 500; font-size: 12px; }
+  .q-rst { text-align: right; color: var(--dim); font-size: 11px; white-space: nowrap; }
+
   .empty { margin: 48px 8px; text-align: center; color: var(--dim); }
   footer { margin-top: 16px; font-size: 11px; color: var(--dim); display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 </style>
 </head>
 <body>
-<main id="main"><p class="empty">Loading…</p></main>
+<main id="main"><p class="empty">加载中…</p></main>
 
 <script>
 (() => {
@@ -96,6 +112,22 @@
   const SEGMENT_COLORS = ['var(--c-system)', 'var(--c-user)', 'var(--c-agent)', 'var(--c-tool)', 'var(--c-custom)'];
   const CONVERSATION = { user: 'var(--c-user)', agent: 'var(--c-agent)', tool: 'var(--c-tool)', system_messages: 'var(--c-sysmsg)' };
   const SYSTEM = new Set(['system_prompt', 'system_tools', 'system_overhead']);
+  const CATEGORY_NAMES = {
+    user: '用户消息',
+    agent: '智能体回复',
+    tool: '工具调用',
+    system_messages: '系统消息',
+    system_prompt: '系统提示词',
+    system_tools: '系统工具',
+    system_overhead: '系统开销',
+    rules: '规则',
+    skills: '技能',
+    subagents: '子智能体',
+    legacy_workflows: '旧版工作流',
+    workflows: '工作流',
+    plugins: '插件',
+    mcp: 'MCP 工具',
+  };
   const params = new URLSearchParams(location.search);
   const conversationId = (window.sidecar && window.sidecar.conversationId) || params.get('conversationId') || '';
   const doFetch = (window.sidecar && window.sidecar.fetch) || fetch;
@@ -103,6 +135,7 @@
   let workspace = '';
   let report = null;
   let lastJson = '';
+  let inFlight = false;
 
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -126,13 +159,14 @@
     counts.forEach((n, i) => {
       dots += (i === 5 ? '<span class="dot"></span>' : `<span class="dot" style="background:${SEGMENT_COLORS[i]}"></span>`).repeat(n);
     });
-    return `<div class="grid" title="Each dot is 1% of the context window">${dots}</div>`;
+    return `<div class="grid" title="每个圆点代表上下文窗口的 1%">${dots}</div>`;
   }
 
   function categoryRow(c, limit) {
     const color = CONVERSATION[c.key] || (SYSTEM.has(c.key) ? 'var(--c-system)' : 'var(--c-custom)');
     const shape = CONVERSATION[c.key] ? '' : ' sq';
-    return `<div class="row"><span class="mark${shape}" style="background:${color}"></span><span>${esc(c.name)}</span>`
+    const label = CATEGORY_NAMES[c.key] || c.name;
+    return `<div class="row"><span class="mark${shape}" style="background:${color}"></span><span>${esc(label)}</span>`
       + `<span class="tok num">${fmtTok(c.tokens)}</span><span class="p num">${c.pct.toFixed(1)}%</span></div>`;
   }
 
@@ -141,12 +175,18 @@
     const rest = r.categories.filter((c) => !CONVERSATION[c.key]);
     const limit = r.limit_tokens;
     const freePct = limit ? (r.free_tokens / limit * 100).toFixed(1) : '0.0';
-    const free = `<div class="row"><span class="mark free"></span><span class="dim">Free space</span>`
+    const free = `<div class="row"><span class="mark free"></span><span class="dim">剩余空间</span>`
       + `<span class="tok num">${fmtTok(r.free_tokens)}</span><span class="p num">${freePct}%</span></div>`;
-    const note = r.heading === 'Token usage by category' ? '' : `<p class="note">${esc(r.heading)}</p>`;
+    let headingNote = '';
+    if (r.heading && r.heading !== 'Token usage by category') {
+      const zhHeading = r.heading
+        .replace('Estimated usage (awaiting generation)', '估算用量（等待生成）')
+        .replace('Estimated after compaction · updates next turn', '压缩后估算 · 下一轮更新');
+      headingNote = `<p class="note">${esc(zhHeading)}</p>`;
+    }
     const buffer = r.checkpoint_buffer
-      ? `<p class="note">Checkpoint buffer: ${fmtTok(r.checkpoint_buffer)} tokens (not counted in usage)</p>` : '';
-    return `<section><h2>Token usage</h2>${note}
+      ? `<p class="note">检查点缓存：${fmtTok(r.checkpoint_buffer)} tokens（不计入用量）</p>` : '';
+    return `<section><h2>Token 用量</h2>${headingNote}
       <div class="group">${conv.map((c) => categoryRow(c, limit)).join('')}</div>
       ${rest.length ? `<div class="group">${rest.map((c) => categoryRow(c, limit)).join('')}</div>` : ''}
       <div class="group">${free}</div>${buffer}</section>`;
@@ -155,9 +195,9 @@
   function checkpoints(r) {
     const ck = r.checkpoint_view;
     if (!ck) return '';
-    const older = ck.historical ? `<div class="dim" style="font-size:12px">${ck.historical} older checkpoint(s) summarized, not in context</div>` : '';
-    return `<section><h2>Checkpoints <span class="hint">${ck.count} · /rewind</span></h2>
-      <div class="ck-main"><span>Checkpoint ${ck.active_number}: ${esc(ck.active_text)}</span><span class="badge">in context</span></div>${older}</section>`;
+    const older = ck.historical ? `<div class="dim" style="font-size:12px">另有 ${ck.historical} 个较早检查点已摘要，不在当前上下文中</div>` : '';
+    return `<section><h2>检查点 <span class="hint">${ck.count} · /rewind</span></h2>
+      <div class="ck-main"><span>检查点 ${ck.active_number}: ${esc(ck.active_text)}</span><span class="badge">上下文中</span></div>${older}</section>`;
   }
 
   function splitPath(path) {
@@ -165,7 +205,7 @@
     const i = trimmed.lastIndexOf('/');
     const name = trimmed.slice(i + 1) + (path.endsWith('/') ? '/' : '');
     let dir = i > 0 ? trimmed.slice(0, i) : '';
-    if (conversationId) dir = dir.replace(new RegExp(`^.*/brain/${conversationId}`), 'conversation folder');
+    if (conversationId) dir = dir.replace(new RegExp(`^.*/brain/${conversationId}`), '会话目录');
     return { name, dir };
   }
 
@@ -179,27 +219,66 @@
     return `<section><h2>${title} <span class="hint">${hint}</span></h2><ul class="files">${rows}</ul></section>`;
   }
 
+  function fmtReset(iso) {
+    if (!iso) return '';
+    const t = Date.parse(iso);
+    if (Number.isNaN(t)) return '';
+    const diff = t - Date.now();
+    if (diff <= 0) return '即将重置';
+    const mins = Math.round(diff / 60000);
+    if (mins < 60) return `${mins}分后重置`;
+    const hours = Math.floor(mins / 60);
+    const remM = mins % 60;
+    if (hours < 24) return remM ? `${hours}h${remM}m` : `${hours}h`;
+    const d = new Date(t);
+    return `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }
+
+  function quotasSection(list) {
+    if (!list || !list.length) return '';
+    const rows = list.map((q) => {
+      const pct = Math.max(0, Math.min(100, q.remainingFraction * 100));
+      const cls = pct <= 20 ? ' low' : (pct <= 50 ? ' mid' : '');
+      const rst = fmtReset(q.resetTime);
+      const rstTitle = q.resetTime ? `重置时间：${new Date(q.resetTime).toLocaleString()}` : '';
+      return `<div class="q-row" title="${esc(q.family)} · 剩余 ${pct.toFixed(1)}%${rstTitle ? ' · ' + esc(rstTitle) : ''}">`
+        + `<span class="q-name">${esc(q.family)}</span>`
+        + `<span class="q-bar"><span class="q-fill${cls}" style="width:${pct.toFixed(1)}%"></span></span>`
+        + `<span class="q-pct num">${pct.toFixed(1)}%</span>`
+        + `<span class="q-rst num">${esc(rst)}</span></div>`;
+    }).join('');
+    return `<section><details class="q-details" id="q-details"><summary><h2>模型接口余量（点击展开）</h2><button id="refresh-quota" class="q-btn" title="立即刷新各模型剩余额度">刷新</button></summary><p class="q-note">数据源为模型接口单池口径；周额度 / 5 小时双窗口请以左下角官方用量为准。</p>${rows}</details></section>`;
+  }
+
   function render(r) {
+    const wasOpen = Boolean(document.getElementById('q-details')?.open);
     const limit = r.limit_tokens;
     main.innerHTML = `
       <div class="top">
-        <div class="model"><span class="live on" title="Live"></span>${esc(r.model)}</div>
-        <button id="copy" title="Copy the report as the CLI prints it">Copy as text</button>
+        <div class="model"><span class="live on" title="实时同步"></span>${esc(r.model)}</div>
+        <button id="copy" title="复制 CLI 格式的纯文本报告">复制文本</button>
       </div>
       <div class="usage">
         <span class="big num">${fmtTok(r.used_tokens)}</span>
-        <span class="of">/ ${limit ? fmtTok(limit) : 'Unknown'} tokens</span>
+        <span class="of">/ ${limit ? fmtTok(limit) : '未知'} tokens</span>
         ${limit ? `<span class="pct num">${r.used_pct.toFixed(1)}%</span>` : ''}
       </div>
       ${grid(r)}
+      ${quotasSection(r.quotas)}
       ${categories(r)}
       ${checkpoints(r)}
-      ${files('Knowledge files', '/rules', r.knowledge_files)}
-      ${files('Artifact files', '/artifact', r.artifact_files)}
-      ${files('Skill files', '/skill', r.skill_files)}
-      ${files('System files', 'auto-loaded', r.system_files)}
-      <footer><span>Related: /artifact · /skill · /rewind</span><span>Updated ${esc(new Date(r.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}</span></footer>`;
+      ${files('知识文件', '/rules', r.knowledge_files)}
+      ${files('产物文件', '/artifact', r.artifact_files)}
+      ${files('技能文件', '/skill', r.skill_files)}
+      ${files('系统文件', '自动加载', r.system_files)}
+      <footer><span>相关命令：/artifact · /skill · /rewind</span><span>更新于 ${esc(new Date(r.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}</span></footer>`;
+    if (wasOpen) {
+      const det = document.getElementById('q-details');
+      if (det) det.open = true;
+    }
     document.getElementById('copy').addEventListener('click', copy);
+    const rq = document.getElementById('refresh-quota');
+    if (rq) rq.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); refresh(true); });
   }
 
   function showMessage(text) {
@@ -221,19 +300,30 @@
       ta.remove();
     }
     const btn = event.currentTarget;
-    btn.textContent = 'Copied';
-    setTimeout(() => { btn.textContent = 'Copy as text'; }, 1500);
+    btn.textContent = '已复制';
+    setTimeout(() => { btn.textContent = '复制文本'; }, 1500);
   }
 
-  async function refresh() {
-    if (document.hidden) return;
+  async function refresh(forceQuota = false) {
+    if (document.hidden || inFlight) return;
+    inFlight = true;
     try {
       const qs = new URLSearchParams({ conversationId, workspace });
+      if (forceQuota) qs.set('forceQuota', '1');
       const res = await doFetch(`/api/report?${qs}`);
       const data = await res.json();
-      if (data.error === 'no-conversation') return showMessage('Open a conversation to see its context usage.');
-      if (data.error === 'no-database') return showMessage('This conversation has no saved data yet. Send a message first.');
-      if (data.error) return showMessage(`Couldn't read this conversation: ${data.message || data.error}`);
+      if (data.error === 'no-conversation') return showMessage('请打开一个对话以查看其上下文用量。');
+      if (data.error === 'no-database') return showMessage('当前对话尚无已保存数据，请先发送一条消息。');
+      if (data.error) {
+        if (report) {
+          const dot = document.querySelector('.live');
+          if (dot) dot.classList.remove('on');
+          return;
+        }
+        return showMessage(`暂时无法读取对话数据：${data.message || data.error}`);
+      }
+      const dot = document.querySelector('.live');
+      if (dot) dot.classList.add('on');
       const json = JSON.stringify(data);
       if (json === lastJson) return;
       lastJson = json;
@@ -242,6 +332,8 @@
     } catch {
       const dot = document.querySelector('.live');
       if (dot) dot.classList.remove('on');
+    } finally {
+      inFlight = false;
     }
   }
 
